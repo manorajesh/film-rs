@@ -5,6 +5,7 @@ use std::path::Path;
 use image::ImageReader;
 use image::Pixel;
 use rgb2spec::{ eval_precise, RGB2Spec };
+use rayon::prelude::*;
 
 /// Convert 0‒1 sRGB component to linear‑light.
 #[inline]
@@ -38,19 +39,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut spectra: Vec<f32> = Vec::with_capacity((w * h * 31) as usize);
 
     // 3. Per‑pixel conversion ------------------------------------------------
-    for pixel in img.pixels() {
-        let channels = pixel.channels();
-        let (r, g, b) = (channels[0], channels[1], channels[2]);
+    let pixel_spectra: Vec<Vec<f32>> = img
+        .pixels()
+        .par_bridge()
+        .map(|pixel| {
+            let channels = pixel.channels();
+            let (r, g, b) = (channels[0], channels[1], channels[2]);
 
-        let rgb_lin = [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)];
+            let rgb_lin = [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)];
 
-        // 3‑coeff representation
-        let coeffs = model.fetch(rgb_lin);
+            // 3‑coeff representation
+            let coeffs = model.fetch(rgb_lin);
 
-        // Reconstruct 31‑band spectrum
-        for &λ in &BANDS {
-            spectra.push(eval_precise(coeffs, λ));
-        }
+            // Reconstruct 31‑band spectrum
+            let mut pixel_spectrum = Vec::with_capacity(31);
+            for &λ in &BANDS {
+                pixel_spectrum.push(eval_precise(coeffs, λ));
+            }
+            pixel_spectrum
+        })
+        .collect();
+
+    // Flatten the results into the spectra vector
+    for pixel_spectrum in pixel_spectra {
+        spectra.extend(pixel_spectrum);
     }
 
     // 4. Write raw little‑endian f32
